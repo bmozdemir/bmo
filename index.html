@@ -1,11 +1,873 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="tr">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Deneme</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gelişmiş Ürün Yönetim Sistemi</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.js"></script>
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js"></script>
 </head>
 <body>
-    Yaraak Denemesi
+  <div id="root"></div>
+  
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+    const { jsPDF } = window.jspdf;
+    
+    const supabase = window.supabase.createClient(
+      'https://nfuebvqcfrretrwipnmh.supabase.co',
+      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5mdWVidnFjZnJyZXRyd2lwbm1oIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjY0MTcyODQsImV4cCI6MjA4MTk5MzI4NH0.hsX6_E3ltS9ovga989lLDOlfU96yE0fG34YVwaudJgU'
+    );
+
+    function App() {
+      const [currentUser, setCurrentUser] = useState(null);
+      const [loginForm, setLoginForm] = useState({ username: '', password: '' });
+      const [page, setPage] = useState('dashboard');
+      const [products, setProducts] = useState([]);
+      const [invoices, setInvoices] = useState([]);
+      const [depots, setDepots] = useState([]);
+      const [alerts, setAlerts] = useState([]);
+      const [movements, setMovements] = useState([]);
+      const [users, setUsers] = useState([]);
+      const [customers, setCustomers] = useState([]);
+      const [loading, setLoading] = useState(false);
+      
+      const [search, setSearch] = useState('');
+      const [barcodeInput, setBarcodeInput] = useState('');
+      const [modal, setModal] = useState('');
+      const [selectedProduct, setSelectedProduct] = useState(null);
+      const [reportData, setReportData] = useState(null);
+      const [dashboardData, setDashboardData] = useState(null);
+      const chartRef = useRef(null);
+      const fileInputRef = useRef(null);
+      
+      // POS Cart
+      const [posCart, setPosCart] = useState([]);
+      const [posCustomer, setPosCustomer] = useState(null);
+      
+      // Forms
+      const [newUser, setNewUser] = useState({ username: '', password: '', full_name: '', role: 'user' });
+      const [newCustomer, setNewCustomer] = useState({ name: '', phone: '', email: '', address: '' });
+      
+      // Camera Scanner
+      const [scanning, setScanning] = useState(false);
+      const scannerRef = useRef(null);
+      const html5QrCodeRef = useRef(null);
+
+      useEffect(() => {
+        const user = localStorage.getItem('user');
+        if (user) {
+          setCurrentUser(JSON.parse(user));
+          loadData();
+        }
+      }, []);
+
+      const handleLogin = async () => {
+        try {
+          const { data, error } = await supabase
+            .from('users')
+            .select('*')
+            .eq('username', loginForm.username)
+            .eq('password', loginForm.password)
+            .single();
+
+          if (error || !data) {
+            alert('❌ Kullanıcı adı veya şifre hatalı!');
+            return;
+          }
+
+          setCurrentUser(data);
+          localStorage.setItem('user', JSON.stringify(data));
+          loadData();
+        } catch (err) {
+          alert('❌ Giriş hatası: ' + err.message);
+        }
+      };
+
+      const handleLogout = () => {
+        setCurrentUser(null);
+        localStorage.removeItem('user');
+      };
+
+      const loadData = async () => {
+        setLoading(true);
+        try {
+          const [d, i, p, a, m, u] = await Promise.all([
+            supabase.from('depots').select('*'),
+            supabase.from('invoices').select('*').order('created_at', { ascending: false }),
+            supabase.from('products').select('*').order('created_at', { ascending: false }),
+            supabase.from('stock_alerts').select('*').eq('is_read', false),
+            supabase.from('stock_movements').select('*').order('created_at', { ascending: false }).limit(20),
+            supabase.from('users').select('*').order('created_at', { ascending: false })
+          ]);
+
+          // Müşteri tablosu yoksa oluştur
+          let c = await supabase.from('customers').select('*').order('created_at', { ascending: false });
+          if (c.error && c.error.code === '42P01') {
+            // Tablo yok, oluştur
+            await supabase.rpc('exec_sql', { 
+              sql: `CREATE TABLE IF NOT EXISTS customers (
+                id BIGSERIAL PRIMARY KEY,
+                name TEXT NOT NULL,
+                phone TEXT NOT NULL,
+                email TEXT,
+                address TEXT,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+              );`
+            });
+            c = { data: [] };
+          }
+
+          if (d.data) setDepots(d.data);
+          if (p.data) setProducts(p.data);
+          if (a.data) setAlerts(a.data);
+          if (m.data) setMovements(m.data);
+          if (u.data) setUsers(u.data);
+          if (c.data) setCustomers(c.data);
+          
+          if (i.data) {
+            const inv = await Promise.all(
+              i.data.map(async (inv) => {
+                const { data } = await supabase.from('products').select('*').eq('invoice_id', inv.id);
+                return { ...inv, products: data || [] };
+              })
+            );
+            setInvoices(inv);
+          }
+
+          // Dashboard Data
+          const today = new Date().toDateString();
+          const todaySales = p.data?.filter(pr => 
+            pr.invoice_id && new Date(pr.created_at).toDateString() === today
+          ) || [];
+          const todayTotal = todaySales.reduce((sum, pr) => sum + (parseFloat(pr.total) || 0), 0);
+          const lowStock = p.data?.filter(pr => pr.current_stock <= pr.min_stock) || [];
+
+          setDashboardData({
+            todaySales: todayTotal,
+            todayOrders: new Set(todaySales.map(pr => pr.invoice_id)).size,
+            lowStockCount: lowStock.length,
+            lowStockProducts: lowStock.slice(0, 5),
+            totalProducts: p.data?.length || 0,
+            totalCustomers: c.data?.length || 0
+          });
+
+        } catch (err) {
+          console.error(err);
+        }
+        setLoading(false);
+      };
+
+      // CUSTOMER MANAGEMENT
+      const addCustomer = async () => {
+        if (!newCustomer.name || !newCustomer.phone) {
+          return alert('❌ Ad ve telefon zorunlu!');
+        }
+
+        try {
+          const { error } = await supabase.from('customers').insert({
+            name: newCustomer.name,
+            phone: newCustomer.phone,
+            email: newCustomer.email,
+            address: newCustomer.address
+          });
+
+          if (error) throw error;
+
+          alert('✅ Müşteri eklendi!');
+          setNewCustomer({ name: '', phone: '', email: '', address: '' });
+          setModal('');
+          loadData();
+        } catch (err) {
+          alert('❌ Hata: ' + err.message);
+        }
+      };
+
+      // PDF INVOICE
+      const generatePDFInvoice = (invoice) => {
+        const doc = new jsPDF();
+        
+        doc.setFontSize(20);
+        doc.text('FATURA', 105, 20, { align: 'center' });
+        
+        doc.setFontSize(10);
+        doc.text('Firma Adı', 20, 40);
+        doc.text('Adres Bilgisi', 20, 45);
+        doc.text('Tel: +90...', 20, 50);
+        
+        doc.text(`Fatura No: ${invoice.invoice_number}`, 140, 40);
+        doc.text(`Tarih: ${new Date(invoice.invoice_date).toLocaleDateString('tr-TR')}`, 140, 45);
+        
+        let y = 70;
+        doc.text('#', 20, y);
+        doc.text('Ürün', 30, y);
+        doc.text('Fiyat', 100, y);
+        doc.text('Adet', 130, y);
+        doc.text('Toplam', 160, y);
+        
+        y += 5;
+        doc.line(20, y, 190, y);
+        
+        y += 10;
+        invoice.products?.forEach((p, i) => {
+          doc.text((i + 1).toString(), 20, y);
+          doc.text(p.name.substring(0, 30), 30, y);
+          doc.text(`${p.price} TL`, 100, y);
+          doc.text(p.stock.toString(), 130, y);
+          doc.text(`${p.total.toFixed(2)} TL`, 160, y);
+          y += 7;
+        });
+        
+        y += 10;
+        doc.line(20, y, 190, y);
+        y += 10;
+        doc.setFontSize(14);
+        doc.text(`TOPLAM: ${invoice.total_amount.toFixed(2)} TL`, 140, y);
+        
+        doc.save(`fatura_${invoice.invoice_number}.pdf`);
+      };
+
+      // BARCODE LABELS
+      const generateBarcodeLabels = () => {
+        const barcoded = products.filter(p => p.barcode);
+        
+        if (barcoded.length === 0) {
+          alert('❌ Barkodlu ürün bulunamadı!');
+          return;
+        }
+
+        const doc = new jsPDF();
+        let y = 20;
+        
+        barcoded.slice(0, 10).forEach((p, i) => {
+          if (i > 0 && i % 4 === 0) {
+            doc.addPage();
+            y = 20;
+          }
+          
+          const canvas = document.createElement('canvas');
+          JsBarcode(canvas, p.barcode, { 
+            format: 'CODE128',
+            width: 2,
+            height: 40,
+            displayValue: true
+          });
+          
+          const imgData = canvas.toDataURL('image/png');
+          doc.addImage(imgData, 'PNG', 20, y, 80, 30);
+          doc.setFontSize(10);
+          doc.text(p.name.substring(0, 30), 20, y + 35);
+          doc.text(`${p.price} TL`, 20, y + 40);
+          
+          y += 60;
+        });
+        
+        doc.save('barkod_etiketleri.pdf');
+        alert('✅ Barkod etiketleri indirildi!');
+      };
+
+      // POS FUNCTIONS
+      const addToCart = (product) => {
+        const existing = posCart.find(item => item.id === product.id);
+        if (existing) {
+          setPosCart(posCart.map(item => 
+            item.id === product.id 
+              ? { ...item, quantity: item.quantity + 1, total: (item.quantity + 1) * item.price }
+              : item
+          ));
+        } else {
+          setPosCart([...posCart, { ...product, quantity: 1, total: product.price }]);
+        }
+      };
+
+      const removeFromCart = (productId) => {
+        setPosCart(posCart.filter(item => item.id !== productId));
+      };
+
+      const updateCartQuantity = (productId, newQty) => {
+        if (newQty <= 0) {
+          removeFromCart(productId);
+          return;
+        }
+        setPosCart(posCart.map(item => 
+          item.id === productId 
+            ? { ...item, quantity: newQty, total: newQty * item.price }
+            : item
+        ));
+      };
+
+      const completePOSSale = async () => {
+        if (posCart.length === 0) return alert('❌ Sepet boş!');
+
+        try {
+          const invoiceNumber = `POS-${Date.now()}`;
+          const totalAmount = posCart.reduce((sum, item) => sum + item.total, 0);
+
+          const { data: newInvoice, error: invError } = await supabase
+            .from('invoices')
+            .insert({
+              invoice_number: invoiceNumber,
+              invoice_date: new Date().toISOString().split('T')[0],
+              depot: 'POS',
+              total_amount: totalAmount,
+              product_count: posCart.length,
+              customer_id: posCustomer?.id || null
+            })
+            .select()
+            .single();
+
+          if (invError) throw invError;
+
+          for (const item of posCart) {
+            const newStock = item.current_stock - item.quantity;
+            
+            await supabase.from('products').update({ current_stock: newStock }).eq('id', item.id);
+            await supabase.from('stock_movements').insert({
+              product_id: item.id,
+              movement_type: 'out',
+              quantity: item.quantity,
+              user_id: currentUser.id,
+              notes: `POS: ${invoiceNumber}`
+            });
+          }
+
+          alert(`✅ Satış tamamlandı!\nToplam: ${totalAmount.toFixed(2)} TL`);
+          
+          if (confirm('Fiş yazdırılsın mı?')) {
+            generatePDFInvoice({ 
+              ...newInvoice, 
+              products: posCart.map(item => ({
+                name: item.name,
+                price: item.price,
+                stock: item.quantity,
+                total: item.total
+              }))
+            });
+          }
+
+          setPosCart([]);
+          setPosCustomer(null);
+          loadData();
+        } catch (err) {
+          alert('❌ Satış hatası: ' + err.message);
+        }
+      };
+
+      // EXCEL IMPORT
+      const handleExcelImport = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = async (event) => {
+          try {
+            const data = new Uint8Array(event.target.result);
+            const workbook = XLSX.read(data, { type: 'array' });
+            const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+            const jsonData = XLSX.utils.sheet_to_json(worksheet);
+
+            if (!jsonData.length) return alert('❌ Excel boş!');
+
+            let updated = 0, inserted = 0, errors = [];
+
+            for (const row of jsonData) {
+              try {
+                const barcode = row.barkod || row.Barkod || row.barcode || row.Barcode;
+                const name = row.urun || row.Urun || row.name || row.Name || row['Ürün Adı'];
+                const price = parseFloat(row.fiyat || row.Fiyat || row.price || 0);
+                const stock = parseInt(row.stok || row.Stok || row.stock || 0);
+                const depot = row.depo || row.Depo || row.depot || 'Ana Depo';
+                const minStock = parseInt(row.min_stok || row.min_stock || 10);
+
+                if (!name) continue;
+
+                if (barcode) {
+                  const { data: existing } = await supabase.from('products').select('*').eq('barcode', barcode).single();
+
+                  if (existing) {
+                    await supabase.from('products').update({
+                      name, price, stock, current_stock: stock, depot, min_stock: minStock, total: price * stock
+                    }).eq('id', existing.id);
+                    updated++;
+                  } else {
+                    await supabase.from('products').insert({
+                      name, price, stock, current_stock: stock, depot, barcode, min_stock: minStock, total: price * stock
+                    });
+                    inserted++;
+                  }
+                } else {
+                  await supabase.from('products').insert({
+                    name, price, stock, current_stock: stock, depot, min_stock: minStock, total: price * stock
+                  });
+                  inserted++;
+                }
+              } catch (err) {
+                errors.push(`${row.urun || row.name}: ${err.message}`);
+              }
+            }
+
+            alert(`✅ Tamamlandı!\n\n📥 Yeni: ${inserted}\n🔄 Güncellenen: ${updated}`);
+            loadData();
+            if (fileInputRef.current) fileInputRef.current.value = '';
+          } catch (err) {
+            alert('❌ Excel hatası: ' + err.message);
+          }
+        };
+        reader.readAsArrayBuffer(file);
+      };
+
+      // CAMERA SCANNER
+      const startScanner = () => {
+        setModal('scanner');
+        setTimeout(() => {
+          if (!html5QrCodeRef.current && scannerRef.current) {
+            html5QrCodeRef.current = new Html5Qrcode("reader");
+            html5QrCodeRef.current.start(
+              { facingMode: "environment" },
+              { fps: 10, qrbox: { width: 250, height: 250 } },
+              (text) => {
+                stopScanner();
+                searchByBarcode(text);
+              },
+              () => {}
+            ).catch(() => {
+              alert("❌ Kamera erişimi reddedildi!");
+              setModal('');
+            });
+          }
+        }, 100);
+      };
+
+      const stopScanner = () => {
+        if (html5QrCodeRef.current) {
+          html5QrCodeRef.current.stop().then(() => {
+            html5QrCodeRef.current = null;
+            setModal('');
+          });
+        }
+      };
+
+      const searchByBarcode = async (barcode) => {
+        if (!barcode) return;
+        const { data } = await supabase.from('products').select('*').eq('barcode', barcode.trim()).single();
+        
+        if (data) {
+          if (page === 'pos') {
+            addToCart(data);
+          } else {
+            setSelectedProduct(data);
+            setModal('detail');
+          }
+        } else {
+          alert(`❌ Barkod bulunamadı: ${barcode}`);
+        }
+        setBarcodeInput('');
+      };
+
+      const addStockMovement = async (type, qty) => {
+        try {
+          let newStock = selectedProduct.current_stock;
+          if (type === 'in') newStock += qty;
+          else if (type === 'out') {
+            if (qty > newStock) return alert('❌ Yetersiz stok!');
+            newStock -= qty;
+          }
+
+          await supabase.from('products').update({ current_stock: newStock }).eq('id', selectedProduct.id);
+          await supabase.from('stock_movements').insert({
+            product_id: selectedProduct.id,
+            movement_type: type,
+            quantity: qty,
+            user_id: currentUser.id
+          });
+
+          alert('✅ Stok güncellendi!');
+          setModal('');
+          loadData();
+        } catch (err) {
+          alert('❌ Hata: ' + err.message);
+        }
+      };
+
+      const filtered = products.filter(p => 
+        p.name?.toLowerCase().includes(search.toLowerCase()) || 
+        p.barcode?.includes(search)
+      );
+
+      if (!currentUser) {
+        return (
+          <div className="min-h-screen bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center p-4">
+            <div className="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-md">
+              <h1 className="text-3xl font-bold text-center mb-8">🏪 Ürün Yönetim</h1>
+              <input
+                type="text"
+                placeholder="Kullanıcı Adı"
+                value={loginForm.username}
+                onChange={e => setLoginForm({...loginForm, username: e.target.value})}
+                className="w-full px-4 py-3 border rounded-lg mb-3"
+              />
+              <input
+                type="password"
+                placeholder="Şifre"
+                value={loginForm.password}
+                onChange={e => setLoginForm({...loginForm, password: e.target.value})}
+                onKeyPress={e => e.key === 'Enter' && handleLogin()}
+                className="w-full px-4 py-3 border rounded-lg mb-4"
+              />
+              <button onClick={handleLogin} className="w-full bg-blue-600 text-white py-3 rounded-lg hover:bg-blue-700 font-semibold">
+                Giriş Yap
+              </button>
+              <p className="text-center text-sm text-gray-500 mt-4">Varsayılan: admin / admin123</p>
+            </div>
+          </div>
+        );
+      }
+
+      if (loading) {
+        return (
+          <div className="min-h-screen bg-gray-100 flex items-center justify-center">
+            <div className="animate-spin rounded-full h-16 w-16 border-b-4 border-blue-600"></div>
+          </div>
+        );
+      }
+
+      return (
+        <div className="min-h-screen bg-gray-100">
+          <nav className="bg-white shadow mb-6">
+            <div className="max-w-7xl mx-auto px-6 py-4 flex justify-between items-center flex-wrap gap-4">
+              <div className="flex gap-2 flex-wrap">
+                {['dashboard', 'pos', 'products', 'invoices', 'customers'].map(p => (
+                  <button key={p} onClick={() => setPage(p)} className={`px-3 py-2 rounded-lg text-sm ${page === p ? 'bg-blue-600 text-white' : 'text-gray-600'}`}>
+                    {p === 'dashboard' ? '📊' : p === 'pos' ? '🛒' : p === 'products' ? '📦' : p === 'invoices' ? '📄' : '👥'}
+                  </button>
+                ))}
+              </div>
+              <div className="flex items-center gap-3">
+                <span className="text-sm">👤 {currentUser.full_name}</span>
+                {alerts.length > 0 && (
+                  <button onClick={() => setModal('alerts')} className="bg-red-500 text-white px-3 py-2 rounded-lg text-sm">
+                    🔔 {alerts.length}
+                  </button>
+                )}
+                <button onClick={handleLogout} className="bg-gray-200 px-4 py-2 rounded-lg text-sm">Çıkış</button>
+              </div>
+            </div>
+          </nav>
+
+          <div className="max-w-7xl mx-auto px-6">
+            {page === 'dashboard' && dashboardData && (
+              <div className="space-y-6">
+                <h1 className="text-3xl font-bold">📊 Dashboard</h1>
+                
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+                  <div className="bg-gradient-to-br from-blue-500 to-blue-600 text-white rounded-xl p-6">
+                    <p className="text-sm opacity-80">Bugünkü Satış</p>
+                    <p className="text-3xl font-bold mt-2">{dashboardData.todaySales.toFixed(2)} ₺</p>
+                    <p className="text-sm mt-2">{dashboardData.todayOrders} sipariş</p>
+                  </div>
+                  
+                  <div className="bg-gradient-to-br from-green-500 to-green-600 text-white rounded-xl p-6">
+                    <p className="text-sm opacity-80">Toplam Ürün</p>
+                    <p className="text-3xl font-bold mt-2">{dashboardData.totalProducts}</p>
+                  </div>
+                  
+                  <div className="bg-gradient-to-br from-purple-500 to-purple-600 text-white rounded-xl p-6">
+                    <p className="text-sm opacity-80">Müşteriler</p>
+                    <p className="text-3xl font-bold mt-2">{dashboardData.totalCustomers}</p>
+                  </div>
+                  
+                  <div className="bg-gradient-to-br from-red-500 to-red-600 text-white rounded-xl p-6">
+                    <p className="text-sm opacity-80">Düşük Stok</p>
+                    <p className="text-3xl font-bold mt-2">{dashboardData.lowStockCount}</p>
+                  </div>
+                </div>
+
+                {dashboardData.lowStockProducts.length > 0 && (
+                  <div className="bg-red-50 border-2 border-red-200 rounded-lg p-6">
+                    <h3 className="text-xl font-bold text-red-800 mb-4">⚠️ Düşük Stoklu Ürünler</h3>
+                    <div className="space-y-2">
+                      {dashboardData.lowStockProducts.map(p => (
+                        <div key={p.id} className="flex justify-between bg-white p-3 rounded">
+                          <div>
+                            <p className="font-semibold">{p.name}</p>
+                            <p className="text-sm text-gray-600">Kalan: {p.current_stock} / Min: {p.min_stock}</p>
+                          </div>
+                          <span className="bg-red-500 text-white px-3 py-1 rounded text-sm h-fit">Kritik</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                  <button onClick={() => setPage('pos')} className="bg-gradient-to-r from-indigo-500 to-purple-600 text-white p-6 rounded-xl hover:shadow-xl">
+                    <p className="text-4xl mb-3">🛒</p>
+                    <p className="text-xl font-bold">Hızlı Satış</p>
+                  </button>
+                  
+                  <button onClick={generateBarcodeLabels} className="bg-gradient-to-r from-green-500 to-emerald-600 text-white p-6 rounded-xl hover:shadow-xl">
+                    <p className="text-4xl mb-3">🏷️</p>
+                    <p className="text-xl font-bold">Barkod Yazdır</p>
+                  </button>
+                  
+                  <button onClick={startScanner} className="bg-gradient-to-r from-pink-500 to-rose-600 text-white p-6 rounded-xl hover:shadow-xl">
+                    <p className="text-4xl mb-3">📸</p>
+                    <p className="text-xl font-bold">Kamera Tara</p>
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {page === 'pos' && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="bg-white rounded-lg shadow p-6">
+                  <h2 className="text-2xl font-bold mb-4">🛒 Hızlı Satış</h2>
+                  
+                  <div className="flex gap-3 mb-4">
+                    <input
+                      type="text"
+                      placeholder="Barkod okut..."
+                      value={barcodeInput}
+                      onChange={e => setBarcodeInput(e.target.value)}
+                      onKeyPress={e => e.key === 'Enter' && searchByBarcode(barcodeInput)}
+                      className="flex-1 px-4 py-3 border rounded-lg"
+                      autoFocus
+                    />
+                    <button onClick={startScanner} className="bg-indigo-600 text-white px-6 py-3 rounded-lg">📷</button>
+                  </div>
+
+                  <input
+                    type="text"
+                    placeholder="Ürün ara..."
+                    value={search}
+                    onChange={e => setSearch(e.target.value)}
+                    className="w-full px-4 py-3 border rounded-lg mb-4"
+                  />
+
+                  <div className="max-h-96 overflow-y-auto space-y-2">
+                    {filtered.slice(0, 10).map(p => (
+                      <div key={p.id} onClick={() => addToCart(p)} className="border-2 rounded-lg p-3 cursor-pointer hover:border-blue-500 hover:bg-blue-50">
+                        <div className="flex justify-between">
+                          <div>
+                            <p className="font-bold">{p.name}</p>
+                            <p className="text-sm text-gray-600">{p.price} TL | Stok: {p.current_stock}</p>
+                          </div>
+                          <button className="bg-blue-600 text-white px-3 py-1 rounded text-sm">+</button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="bg-white rounded-lg shadow p-6">
+                  <h3 className="text-xl font-bold mb-4">🛍️ Sepet</h3>
+                  
+                  {posCart.length === 0 ? (
+                    <p className="text-center text-gray-500 py-12">Sepet boş</p>
+                  ) : (
+                    <>
+                      <div className="max-h-96 overflow-y-auto space-y-2 mb-4">
+                        {posCart.map(item => (
+                          <div key={item.id} className="border rounded-lg p-3">
+                            <div className="flex justify-between mb-2">
+                              <p className="font-semibold flex-1">{item.name}</p>
+                              <button onClick={() => removeFromCart(item.id)} className="text-red-600">🗑️</button>
+                            </div>
+                            <div className="flex justify-between items-center">
+                              <div className="flex gap-2">
+                                <button onClick={() => updateCartQuantity(item.id, item.quantity - 1)} className="bg-gray-200 px-3 py-1 rounded">-</button>
+                                <span className="w-12 text-center font-bold">{item.quantity}</span>
+                                <button onClick={() => updateCartQuantity(item.id, item.quantity + 1)} className="bg-gray-200 px-3 py-1 rounded">+</button>
+                              </div>
+                              <p className="font-bold text-green-600">{item.total.toFixed(2)} TL</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div className="border-t-2 pt-4">
+                        <div className="flex justify-between mb-4">
+                          <p className="text-2xl font-bold">TOPLAM:</p>
+                          <p className="text-3xl font-bold text-green-600">
+                            {posCart.reduce((sum, item) => sum + item.total, 0).toFixed(2)} TL
+                          </p>
+                        </div>
+
+                        <select
+                          value={posCustomer?.id || ''}
+                          onChange={e => setPosCustomer(customers.find(c => c.id === parseInt(e.target.value)) || null)}
+                          className="w-full px-4 py-3 border rounded-lg mb-4"
+                        >
+                          <option value="">Müşteri Seç</option>
+                          {customers.map(c => (
+                            <option key={c.id} value={c.id}>{c.name} - {c.phone}</option>
+                          ))}
+                        </select>
+
+                        <button onClick={completePOSSale} className="w-full bg-green-600 text-white py-4 rounded-lg font-bold text-xl">
+                          ✅ Satışı Tamamla
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {page === 'products' && (
+              <div className="space-y-6">
+                {currentUser.role === 'admin' && (
+                  <div className="bg-gradient-to-r from-green-600 to-emerald-600 rounded-lg p-6 text-white">
+                    <h3 className="text-xl font-bold mb-4">📊 Excel'den Ürün Ekle</h3>
+                    <div className="flex gap-3">
+                      <input ref={fileInputRef} type="file" accept=".xlsx,.xls" onChange={handleExcelImport} className="hidden" id="excel-upload" />
+                      <label htmlFor="excel-upload" className="flex-1 bg-white text-green-600 px-6 py-3 rounded-lg cursor-pointer text-center font-semibold">
+                        📁 Excel Seç
+                      </label>
+                    </div>
+                  </div>
+                )}
+
+                <div className="bg-white rounded-lg shadow p-6">
+                  <input
+                    type="text"
+                    placeholder="Ürün ara..."
+                    value={search}
+                    onChange={e => setSearch(e.target.value)}
+                    className="w-full px-4 py-3 border rounded-lg"
+                  />
+                </div>
+
+                {search && (
+                  <div className="bg-white rounded-lg shadow p-6">
+                    <h3 className="text-xl font-bold mb-4">Sonuçlar ({filtered.length})</h3>
+                    <div className="grid gap-4">
+                      {filtered.map(p => (
+                        <div key={p.id} onClick={() => { setSelectedProduct(p); setModal('detail'); }} className="border-2 rounded-lg p-4 cursor-pointer hover:border-blue-500">
+                          <div className="flex justify-between">
+                            <div>
+                              <h4 className="font-bold text-lg">{p.name}</h4>
+                              <p className="text-gray-600">{p.price} TL × {p.current_stock}</p>
+                              {p.barcode && <p className="text-sm text-gray-500">🔖 {p.barcode}</p>}
+                            </div>
+                            {p.current_stock <= p.min_stock && (
+                              <span className="bg-red-500 text-white text-xs px-2 py-1 rounded h-fit">⚠️</span>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {page === 'customers' && (
+              <div className="bg-white rounded-lg shadow p-6">
+                <div className="flex justify-between mb-6">
+                  <h2 className="text-2xl font-bold">👥 Müşteriler</h2>
+                  <button onClick={() => setModal('addCustomer')} className="bg-blue-600 text-white px-6 py-3 rounded-lg">+ Yeni</button>
+                </div>
+                
+                <div className="grid gap-4">
+                  {customers.map(c => (
+                    <div key={c.id} className="border-2 rounded-lg p-4">
+                      <h3 className="font-bold text-lg">{c.name}</h3>
+                      <p className="text-sm text-gray-600">📞 {c.phone}</p>
+                      {c.email && <p className="text-sm text-gray-600">📧 {c.email}</p>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {page === 'invoices' && (
+              <div className="bg-white rounded-lg shadow p-6">
+                <h2 className="text-2xl font-bold mb-6">📄 Faturalar</h2>
+                {invoices.map(inv => (
+                  <div key={inv.id} className="border-2 rounded-lg p-5 mb-4">
+                    <div className="flex justify-between mb-3">
+                      <div>
+                        <h3 className="text-xl font-bold">{inv.invoice_number}</h3>
+                        <p className="text-sm text-gray-500">{new Date(inv.invoice_date).toLocaleDateString('tr-TR')}</p>
+                      </div>
+                      <button onClick={() => generatePDFInvoice(inv)} className="bg-red-600 text-white px-4 py-2 rounded-lg text-sm">
+                        📄 PDF
+                      </button>
+                    </div>
+                    <div className="bg-green-50 border-2 border-green-200 rounded p-4">
+                      <p className="text-3xl font-bold text-green-700">{inv.total_amount?.toFixed(2)} TL</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* MODALS */}
+          {modal === 'scanner' && (
+            <div className="fixed inset-0 bg-black bg-opacity-90 flex items-center justify-center p-4 z-50">
+              <div className="bg-white rounded-lg p-6 w-full max-w-md">
+                <h2 className="text-2xl font-bold mb-4 text-center">📸 Barkod Tara</h2>
+                <div id="reader" ref={scannerRef} className="mb-4"></div>
+                <button onClick={stopScanner} className="w-full bg-red-600 text-white py-3 rounded-lg">❌ Kapat</button>
+              </div>
+            </div>
+          )}
+
+          {modal === 'detail' && selectedProduct && (
+            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+              <div className="bg-white rounded-lg p-6 w-full max-w-md">
+                <h2 className="text-2xl font-bold mb-4">{selectedProduct.name}</h2>
+                <div className="space-y-2 mb-6">
+                  <p><strong>Fiyat:</strong> {selectedProduct.price} TL</p>
+                  <p><strong>Stok:</strong> {selectedProduct.current_stock}</p>
+                  {selectedProduct.barcode && <p><strong>Barkod:</strong> {selectedProduct.barcode}</p>}
+                </div>
+                {currentUser.role === 'admin' && (
+                  <div className="flex gap-3 mb-4">
+                    <button onClick={() => { const qty = prompt('Giriş:'); if (qty) addStockMovement('in', parseInt(qty)); }} className="flex-1 bg-green-600 text-white py-3 rounded-lg">
+                      📥 Giriş
+                    </button>
+                    <button onClick={() => { const qty = prompt('Çıkış:'); if (qty) addStockMovement('out', parseInt(qty)); }} className="flex-1 bg-red-600 text-white py-3 rounded-lg">
+                      📤 Çıkış
+                    </button>
+                  </div>
+                )}
+                <button onClick={() => setModal('')} className="w-full bg-gray-200 py-3 rounded-lg">Kapat</button>
+              </div>
+            </div>
+          )}
+
+          {modal === 'addCustomer' && (
+            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+              <div className="bg-white rounded-lg p-6 w-full max-w-md">
+                <h2 className="text-2xl font-bold mb-4">👤 Yeni Müşteri</h2>
+                <input type="text" placeholder="Ad Soyad*" value={newCustomer.name} onChange={e => setNewCustomer({...newCustomer, name: e.target.value})} className="w-full px-4 py-3 border rounded-lg mb-3" />
+                <input type="text" placeholder="Telefon*" value={newCustomer.phone} onChange={e => setNewCustomer({...newCustomer, phone: e.target.value})} className="w-full px-4 py-3 border rounded-lg mb-3" />
+                <input type="email" placeholder="Email" value={newCustomer.email} onChange={e => setNewCustomer({...newCustomer, email: e.target.value})} className="w-full px-4 py-3 border rounded-lg mb-3" />
+                <textarea placeholder="Adres" value={newCustomer.address} onChange={e => setNewCustomer({...newCustomer, address: e.target.value})} className="w-full px-4 py-3 border rounded-lg mb-4" rows={3}></textarea>
+                <div className="flex gap-3">
+                  <button onClick={addCustomer} className="flex-1 bg-blue-600 text-white py-3 rounded-lg">Kaydet</button>
+                  <button onClick={() => { setModal(''); setNewCustomer({ name: '', phone: '', email: '', address: '' }); }} className="flex-1 bg-gray-200 py-3 rounded-lg">İptal</button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    ReactDOM.render(<App />, document.getElementById('root'));
+  </script>
 </body>
 </html>
